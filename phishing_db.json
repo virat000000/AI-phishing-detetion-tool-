@@ -1,0 +1,53 @@
+{
+    "scans": [],
+    "statistics": {
+        "total_scans": 0,
+        "safe_scans": 0,
+        "threats_detected": 0
+    },
+    "known_malicious_domains": [
+        "phishing-site.tk",
+        "steal-info.ml",
+        "hack-account.ga",
+        "fake-login.cf",
+        "scam-paypal.gq",
+        "verify-account.xyz",
+        "secure-login.top",
+        "update-payment.work"
+    ],
+    "known_safe_domains": [
+        "google.com",
+        "facebook.com",
+        "amazon.com",
+        "microsoft.com",
+        "apple.com",
+        "twitter.com",
+        "linkedin.com",
+        "github.com",
+        "stackoverflow.com",
+        "wikipedia.org",
+        "youtube.com"
+    ],
+    "suspicious_tlds": [
+        ".tk",
+        ".ml",
+        ".ga",
+        ".cf",
+        ".gq",
+        ".xyz",
+        ".top",
+        ".work",
+        ".click"
+    ],
+    "disposable_email_domains": [
+        "tempmail.com",
+        "10minutemail.com",
+        "guerrillamail.com",
+        "mailinator.com",
+        "yopmail.com",
+        "throwaway.email",
+        "trashmail.com",
+        "dispostable.com",
+        "sharklasers.com"
+    ]
+}
