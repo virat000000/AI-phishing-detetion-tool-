@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI PhishGuard - Fake Website & Email Detector
-Complete single-file Flask application with enhanced classification.
+Complete single-file Flask application for deployment on Render
 Classifications: SAFE, UNSAFE, FAKE, FRAUD, IDENTITY RISK
 """
 
@@ -27,7 +27,7 @@ try:
     DNS_AVAILABLE = True
 except ImportError:
     DNS_AVAILABLE = False
-    print("WARNING: 'dnspython' not found. MX record check will be disabled.")
+    print("WARNING: 'dnspython' not found. MX/SPF/DMARC checks will be disabled.")
 
 app = Flask(__name__)
 CORS(app)
@@ -84,8 +84,7 @@ BRAND_DOMAINS = {
     "amazon": "amazon.com", "paypal": "paypal.com", "netflix": "netflix.com",
     "twitter": "twitter.com", "github": "github.com", "yahoo": "yahoo.com",
     "linkedin": "linkedin.com", "bankofamerica": "bankofamerica.com", "chase": "chase.com",
-    "wellsfargo": "wellsfargo.com", "fedex": "fedex.com", "ups": "ups.com", "dhl": "dhl.com",
-    "usps": "usps.com", "irs": "irs.gov", "fedloan": "fedloan.org"
+    "wellsfargo": "wellsfargo.com", "fedex": "fedex.com", "ups": "ups.com"
 }
 
 # Phishing keywords for content detection
@@ -93,13 +92,12 @@ PHISHING_KEYWORDS = [
     "verify", "account suspended", "urgent action", "update your information",
     "confirm your identity", "unusual activity", "security alert", "click here",
     "login to verify", "payment required", "your account has been locked",
-    "limited access", "restoration required", "validate account", "immediate attention",
-    "suspicious activity", "unusual login", "verify now", "account verification"
+    "limited access", "restoration required", "validate account"
 ]
 
 def normalize_domain(domain):
     d = domain.lower()
-    subs = {'0':'o', '1':'l', '3':'e', '4':'a', '5':'s', '6':'g', '7':'t', '8':'b', '@':'a', 'vv':'w', 'rn':'m', 'vv':'w'}
+    subs = {'0':'o', '1':'l', '3':'e', '4':'a', '5':'s', '6':'g', '7':'t', '8':'b', '@':'a', 'vv':'w', 'rn':'m'}
     for k, v in subs.items():
         d = d.replace(k, v)
     return d
@@ -139,23 +137,6 @@ def detect_fake_domain(domain):
             return True, brand, real, f"Typosquatting (misspelling distance: {dist})"
     return False, None, None, None
 
-def check_spoofed_email(domain, local_part):
-    """Check for spoofed email patterns"""
-    red_flags = []
-    reasons = []
-    suspicious_patterns = [
-        (r'[0-9]', "contains numbers", "Suspicious numbers in email prefix"),
-        (r'[._-]{2,}', "multiple separators", "Unusual pattern with multiple dots/dashes"),
-        (r'^(admin|support|service|security|verify|alert|no-reply|noreply|care|help|info)', "official-sounding prefix", "Impersonates official support/sender role"),
-        (r'(paypal|google|microsoft|apple|amazon|facebook|netflix|bank)', "brand name", "Contains brand name - potential impersonation"),
-        (r'[a-z]{1,2}[0-9]{3,}', "letter-number pattern", "Suspicious alphanumeric pattern"),
-    ]
-    for pattern, short, full in suspicious_patterns:
-        if re.search(pattern, local_part, re.I):
-            red_flags.append(short)
-            reasons.append(full)
-    return red_flags, reasons
-
 # ================= ENHANCED DETECTOR =================
 class PhishingDetector:
     def __init__(self):
@@ -166,11 +147,11 @@ class PhishingDetector:
         risk = 0
         indicators = []
         threats = []
-        red_flags = []
         details = {}
+        emails = []
+        red_flags = []
         classification = "SAFE"
         reason = ""
-        red_flags_list = []
 
         try:
             if not url.startswith(("http", "https")):
@@ -187,14 +168,13 @@ class PhishingDetector:
                         age = (datetime.now() - date).days
                         if age < 7:
                             risk += 45
-                            indicators.append(f"⏳ CRITICAL: Domain is only {age} days old (high risk)")
+                            indicators.append(f"⏳ CRITICAL: Domain is only {age} days old")
                             threats.append("New Domain")
-                            red_flags_list.append(f"Domain created {age} days ago (very recent)")
+                            red_flags.append(f"Domain created {age} days ago")
                         elif age < 30:
                             risk += 25
                             indicators.append(f"⏳ New domain ({age} days old)")
                             threats.append("Recently Created Domain")
-                            red_flags_list.append(f"Domain is new ({age} days old)")
                 except:
                     pass
 
@@ -202,149 +182,115 @@ class PhishingDetector:
             self.db = load_db()
             if domain in self.db.get("known_malicious_domains", []):
                 risk = 100
-                indicators.append("⛔ DOMAIN BLACKLISTED - Known malicious site")
+                indicators.append("⛔ DOMAIN BLACKLISTED")
                 threats.append("Blacklisted Domain")
-                red_flags_list.append("Domain found in malicious blacklist")
+                red_flags.append("Domain found in security blacklist")
 
             # 3. HTTPS Check
             if parsed.scheme != "https":
                 risk += 20
-                indicators.append("🔓 No HTTPS encryption - data transmitted insecurely")
-                red_flags_list.append("No HTTPS/SSL encryption")
+                indicators.append("🔓 No HTTPS encryption")
+                red_flags.append("No HTTPS/SSL encryption")
 
             # 4. Redirect symbol @
             if "@" in url:
                 risk += 50
-                indicators.append("🎯 Redirect symbol '@' - URL spoofing technique")
+                indicators.append("🎯 Redirect symbol '@' - URL spoofing")
                 threats.append("URL Spoofing")
-                red_flags_list.append("Contains @ symbol (URL spoofing technique)")
+                red_flags.append("Contains @ symbol (URL spoofing)")
 
             # 5. Suspicious TLD
             for tld in self.db.get("suspicious_tlds", []):
                 if domain.endswith(tld):
                     risk += 35
-                    indicators.append(f"🚩 Suspicious TLD: {tld} (often used for phishing)")
+                    indicators.append(f"🚩 Suspicious TLD: {tld}")
                     threats.append("Untrusted TLD")
-                    red_flags_list.append(f"Suspicious top-level domain: {tld}")
+                    red_flags.append(f"Suspicious TLD: {tld}")
                     break
 
-            # 6. Suspicious Keywords in URL
+            # 6. Suspicious Keywords
             found = [k for k in self.suspicious_keywords if k in url.lower()]
             if found:
                 risk += min(len(found) * 12, 35)
-                indicators.append(f"🔑 Suspicious keywords in URL: {', '.join(found)}")
-                red_flags_list.append(f"Contains suspicious keywords: {', '.join(found)}")
+                indicators.append(f"🔑 Suspicious keywords: {', '.join(found)}")
+                red_flags.append(f"Contains keywords: {', '.join(found)}")
 
-            # 7. Brand Impersonation Detection
+            # 7. Brand Impersonation
             is_fake, brand, real, attack = detect_fake_domain(domain)
-            brand_risk = 0
             if is_fake:
-                brand_risk = 75
-                risk += brand_risk
-                indicators.append(f"🎭 FAKE BRAND DETECTED: Impersonating {brand.upper()}")
-                indicators.append(f"   Legitimate domain: {real}")
-                indicators.append(f"   Attack technique: {attack}")
+                risk += 75
+                indicators.append(f"🎭 FAKE BRAND: Impersonating {brand.upper()}")
+                indicators.append(f"   Legitimate: {real}")
                 threats.append("Brand Spoofing")
-                red_flags_list.append(f"Domain impersonates {brand.upper()} (real: {real}) - {attack}")
+                red_flags.append(f"Impersonates {brand.upper()} (real: {real})")
                 details = {"fake_brand": brand, "real_domain": real, "attack_type": attack}
 
-            # 8. Content Analysis for phishing text
-            phishing_content_found = []
+            # 8. Content Analysis
+            phishing_content = []
             try:
                 r = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
                 if r.status_code == 200:
                     content_lower = r.text.lower()
                     for keyword in PHISHING_KEYWORDS:
                         if keyword.lower() in content_lower:
-                            phishing_content_found.append(keyword)
+                            phishing_content.append(keyword)
                             risk += 8
+                    if phishing_content:
+                        risk += min(len(phishing_content) * 5, 25)
+                        indicators.append(f"📧 Phishing language: {', '.join(phishing_content[:3])}")
                     
-                    if phishing_content_found:
-                        risk += min(len(phishing_content_found) * 5, 25)
-                        indicators.append(f"📧 Phishing language detected: {', '.join(phishing_content_found[:3])}")
-                        red_flags_list.append(f"Contains phishing keywords: {', '.join(phishing_content_found[:2])}")
-                    
-                    # Check for suspicious forms
+                    # Check for external forms
                     if "action=\"http" in r.text and parsed.netloc not in r.text:
                         risk += 25
-                        indicators.append("⚠️ External login form - credentials sent to different domain")
-                        red_flags_list.append("Login form submits data to external domain")
-            except requests.Timeout:
-                indicators.append("⏱️ Website timeout - suspicious behavior")
-                red_flags_list.append("Website timeout/unresponsive")
+                        indicators.append("⚠️ External login form")
+                        red_flags.append("Form submits to external domain")
             except:
                 pass
 
             risk = min(risk, 100)
 
             # Check for malware extensions
-            malware_exts = [".exe", ".apk", ".bat", ".scr", ".vbs", ".cmd", ".msi", ".jar"]
+            malware_exts = [".exe", ".apk", ".bat", ".scr", ".vbs", ".cmd", ".msi"]
             is_malware = any(url.lower().split('?')[0].endswith(ext) for ext in malware_exts)
             
-            # DETERMINE CLASSIFICATION WITH REASONS
+            # DETERMINE CLASSIFICATION
             if is_malware:
                 classification = "FRAUD"
-                reason = "This URL directly links to a malware executable file"
-                red_flags_list.append("Direct download link to executable file (malware risk)")
+                reason = "Malware download detected in URL - DO NOT PROCEED"
                 indicators.append("🦠 MALWARE DETECTED")
                 risk = 100
-                
+                red_flags.append("Direct link to executable file")
             elif domain in self.db.get("known_malicious_domains", []):
                 classification = "UNSAFE"
-                reason = "This domain is blacklisted for malicious activities including phishing and scams"
-                red_flags_list.append("Domain found in security blacklist")
-                
-            elif is_fake and brand_risk >= 75:
+                reason = "This domain is blacklisted for malicious activities including phishing"
+            elif is_fake:
                 classification = "FAKE"
-                reason = f"This is a FAKE website impersonating {brand.upper()}. The domain '{domain}' tries to trick you by misspelling or modifying the real domain '{real}'."
-                red_flags_list.append(f"Impersonates {brand.upper()} - {attack}")
-                
+                reason = f"This is a FAKE website impersonating {brand.upper()}. The domain tries to trick you by misspelling the real domain '{real}'."
             elif risk >= 85:
                 classification = "FRAUD"
-                reason = "Multiple high-risk indicators detected. This website shows clear signs of fraudulent activity and should be avoided completely."
-                if red_flags_list:
-                    reason += f" Key issues: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Multiple high-risk indicators detected - fraudulent activity suspected"
             elif risk >= 65:
                 classification = "UNSAFE"
-                reason = "This website shows strong signs of phishing or scam activity. Do not enter any personal information."
-                if red_flags_list:
-                    reason += f" Red flags detected: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Strong signs of phishing or scam detected. Do not enter any personal information."
             elif risk >= 35:
                 classification = "IDENTITY RISK"
-                reason = "Suspicious behavior detected that could lead to identity theft. Exercise caution before proceeding."
-                if red_flags_list:
-                    reason += f" Warning signs: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Suspicious behavior detected that could lead to identity theft"
             elif risk >= 15:
                 classification = "SAFE"
-                reason = "Minor concerns detected but the website appears generally legitimate."
-                
+                reason = "Minor concerns detected but appears generally legitimate"
             else:
                 classification = "SAFE"
-                reason = "No security issues detected. This website appears legitimate and safe to use."
+                reason = "No security issues detected - appears legitimate"
 
-            # Auto-blacklist if UNSAFE, FAKE, or FRAUD
+            # Auto-blacklist
             if classification in ["UNSAFE", "FAKE", "FRAUD"]:
                 add_to_blacklist(domain)
-
-            # Build detailed explanation
-            detailed_reason = self._build_detailed_reason(classification, risk, threats, red_flags_list, brand if 'brand' in locals() else None, real if 'real' in locals() else None)
+                indicators.append("🚫 DOMAIN ADDED TO BLACKLIST")
 
             return {
-                "success": True,
-                "type": "url",
-                "url": url,
-                "domain": domain,
-                "risk_score": risk,
-                "classification": classification,
-                "reason": reason,
-                "detailed_reason": detailed_reason,
-                "red_flags": red_flags_list,
-                "indicators": indicators,
-                "threats": threats,
-                "details": details,
+                "success": True, "type": "url", "url": url, "domain": domain, "risk_score": risk,
+                "result": classification, "reason": reason, "red_flags": red_flags,
+                "indicators": indicators, "threats": threats, "details": details,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         except Exception as e:
@@ -354,8 +300,8 @@ class PhishingDetector:
         risk = 0
         indicators = []
         threats = []
-        red_flags_list = []
         details = {}
+        red_flags = []
         classification = "SAFE"
         reason = ""
 
@@ -364,202 +310,116 @@ class PhishingDetector:
             if not re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
                 return {"success": False, "error": "Invalid email format"}
             
-            domain = email.split("@")[1]
-            local_part = email.split("@")[0]
+            local_part, domain = email.split("@")
 
-            # 1. Check for official/legitimate domains
+            # 1. Official domain check
             is_official = False
-            official_brand = None
             for brand, official_domain in BRAND_DOMAINS.items():
                 if domain == official_domain:
                     is_official = True
-                    official_brand = brand
-                    indicators.append(f"✅ Official domain: {domain} ({brand.upper()})")
+                    indicators.append(f"✅ Official domain: {domain}")
                     break
 
-            # 2. Fake/Impersonation Domain Detection
+            # 2. Fake/Impersonation Detection
             is_fake, brand, real, attack = detect_fake_domain(domain)
-            brand_risk = 0
-            
             if is_fake:
-                brand_risk = 80
-                risk += brand_risk
-                indicators.append(f"🎭 FAKE DOMAIN: This email pretends to be from {brand.upper()}")
-                indicators.append(f"   Real domain should be: {real}")
-                indicators.append(f"   Attack: {attack}")
+                risk += 80
+                indicators.append(f"🎭 FAKE DOMAIN: Impersonating {brand.upper()}")
+                indicators.append(f"   Real: {real} | Attack: {attack}")
                 threats.append("Domain Impersonation")
-                red_flags_list.append(f"Domain '{domain}' impersonates legitimate '{real}'")
-                red_flags_list.append(f"Attack technique: {attack}")
+                red_flags.append(f"Impersonates {brand.upper()} (should be {real})")
                 details = {"fake_brand": brand, "real_domain": real, "attack_type": attack}
 
-            # 3. MX Record Check (email configuration)
-            if DNS_AVAILABLE and not is_official:
+            # 3. Scam keywords in local part
+            scam_keywords = ["urgent", "verify", "update", "security", "billing", "invoice", "alert", "account", "payment", "support"]
+            found_kw = [k for k in scam_keywords if k in local_part]
+            if found_kw:
+                risk += 35
+                indicators.append(f"🚩 Scam keywords in address: {', '.join(found_kw)}")
+                threats.append("Suspicious Language")
+                red_flags.append(f"Contains scam keywords: {', '.join(found_kw)}")
+
+            # 4. DNS Authentication (SPF, DMARC, MX)
+            if DNS_AVAILABLE:
                 try:
-                    mx_records = list(dns.resolver.resolve(domain, 'MX'))
-                    if not mx_records:
-                        risk += 25
-                        indicators.append("✉️ No MX records - domain cannot receive emails")
-                        threats.append("Invalid Email Setup")
-                        red_flags_list.append("No MX records (domain cannot receive emails)")
+                    dns.resolver.resolve(domain, 'MX')
+                    indicators.append("✅ Valid MX records")
                 except:
                     risk += 25
-                    indicators.append("✉️ No valid MX records found")
-                    threats.append("Missing MX Records")
-                    red_flags_list.append("Domain has no email server configuration")
-
-            # 4. Check for spoofed email patterns
-            spoof_flags, spoof_reasons = check_spoofed_email(domain, local_part)
-            if spoof_flags:
-                risk += min(len(spoof_flags) * 12, 35)
-                for flag in spoof_flags:
-                    red_flags_list.append(flag)
-                for reason_text in spoof_reasons[:2]:
-                    indicators.append(f"⚠️ {reason_text}")
-                threats.append("Email Spoofing")
-
-            # 5. Gmail-specific checks
-            if domain == "gmail.com":
-                suspicious_gmail = []
-                if re.search(r'[0-9]{4,}', local_part):
-                    suspicious_gmail.append("Contains multiple numbers - potential throwaway account")
-                    red_flags_list.append("Unusual number pattern in Gmail address")
-                if re.search(r'(paypal|amazon|google|microsoft|apple|support|verify|security|alert|bank)', local_part, re.I):
-                    suspicious_gmail.append("Contains brand/service name - potential impersonation")
-                    red_flags_list.append("Contains brand name in email prefix")
-                if re.search(r'[._-]{2,}', local_part):
-                    suspicious_gmail.append("Multiple special characters - unusual pattern")
-                    red_flags_list.append("Unusual pattern with dots/dashes")
+                    indicators.append("✉️ No MX records")
+                    red_flags.append("No MX records - domain may not receive emails")
                 
-                for flag in suspicious_gmail:
-                    indicators.append(f"⚠️ Gmail: {flag}")
-                    if len(suspicious_gmail) >= 2:
-                        threats.append("Suspicious Gmail Pattern")
+                # SPF Check
+                try:
+                    answers = dns.resolver.resolve(domain, 'TXT')
+                    spf = any('v=spf1' in rdata.to_text().lower() for rdata in answers)
+                    if spf:
+                        indicators.append("✅ SPF authenticated")
+                    else:
+                        risk += 10
+                        indicators.append("🔓 No SPF record")
+                        red_flags.append("Missing SPF record")
+                except:
+                    risk += 10
+                    indicators.append("🔓 No SPF record")
+                
+                # DMARC Check
+                try:
+                    answers = dns.resolver.resolve('_dmarc.' + domain, 'TXT')
+                    dmarc = any('v=dmarc1' in rdata.to_text().lower() for rdata in answers)
+                    if dmarc:
+                        indicators.append("✅ DMARC authenticated")
+                    else:
+                        risk += 10
+                        indicators.append("🔓 No DMARC record")
+                except:
+                    risk += 10
+                    indicators.append("🔓 No DMARC record")
 
-            # 6. Check for common phishing email traits
-            phishing_traits = []
-            if any(word in local_part for word in ["verify", "security", "alert", "support", "service", "no-reply", "admin", "care"]):
-                phishing_traits.append("Sender name impersonates official role")
-                red_flags_list.append("Email prefix impersonates official sender")
-            if re.search(r'[0-9]{5,}', local_part):
-                phishing_traits.append("Unusual number sequence")
-                red_flags_list.append("Suspicious number sequence in email")
-            if re.search(r'[a-z][0-9]{3,}[a-z]', local_part):
-                phishing_traits.append("Alphanumeric pattern typical of throwaway accounts")
-                red_flags_list.append("Alphanumeric pattern (common for fake accounts)")
-            
-            for trait in phishing_traits:
-                indicators.append(f"⚠️ {trait}")
+            # Gmail-specific checks
+            if domain == "gmail.com" and found_kw:
+                risk += 20
+                indicators.append("⚠️ Gmail with official-sounding prefix - potential scam")
+                red_flags.append("Gmail address impersonating official role")
 
-            # Calculate final risk
             risk = min(risk, 100)
 
-            # DETERMINE CLASSIFICATION WITH REASONS
+            # DETERMINE CLASSIFICATION
             if domain in self.db.get("known_malicious_domains", []):
                 classification = "UNSAFE"
-                reason = "This email domain is blacklisted for malicious activities including phishing scams"
-                red_flags_list.append("Domain found in security blacklist")
-                
-            elif is_fake and brand_risk >= 80:
+                reason = "This email domain is blacklisted for malicious activities"
+            elif is_fake:
                 classification = "FAKE"
-                reason = f"This is a FAKE email address. The domain '{domain}' is impersonating {brand.upper()}. Real domain should be '{real}'. This is a phishing attempt."
-                red_flags_list.append(f"Impersonates {brand.upper()} via domain typo")
-                
+                reason = f"This is a FAKE email address impersonating {brand.upper()}. The real domain should be '{real}'."
             elif risk >= 80:
                 classification = "FRAUD"
-                reason = "This email shows clear signs of fraudulent activity. Multiple red flags indicate it is part of a scam operation."
-                if red_flags_list:
-                    reason += f" Key indicators: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Clear signs of fraudulent activity - this is likely a scam email"
             elif risk >= 55:
                 classification = "UNSAFE"
-                reason = "This email shows strong signs of phishing or scam. Do not reply or click any links from this sender."
-                if red_flags_list:
-                    reason += f" Red flags: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Strong signs of phishing - do not reply or click any links"
             elif risk >= 30:
                 classification = "IDENTITY RISK"
-                reason = "Suspicious email that could lead to identity theft. The sender shows unusual patterns typical of phishing attempts."
-                if red_flags_list:
-                    reason += f" Warning signs: {', '.join(red_flags_list[:2])}"
-                    
+                reason = "Suspicious email that could lead to identity theft"
             elif is_official and risk < 15:
                 classification = "SAFE"
-                reason = f"Legitimate {official_brand.upper()} email address. No suspicious patterns detected."
-                
+                reason = f"Legitimate {domain} email address"
             else:
                 classification = "SAFE"
-                reason = "No significant red flags detected. This email appears legitimate."
+                reason = "No significant red flags detected"
 
-            # Build red flags summary
-            red_flags_summary = ""
-            if red_flags_list:
-                red_flags_summary = " Red flags: " + "; ".join(red_flags_list[:3])
-                if len(red_flags_list) > 3:
-                    red_flags_summary += f" (+{len(red_flags_list)-3} more)"
-
-            # Auto-blacklist if UNSAFE, FAKE, or FRAUD
+            # Auto-blacklist
             if classification in ["UNSAFE", "FAKE", "FRAUD"]:
                 add_to_blacklist(domain)
                 indicators.append("🚫 DOMAIN ADDED TO BLACKLIST")
 
             return {
-                "success": True,
-                "type": "email",
-                "email": email,
-                "domain": domain,
-                "risk_score": risk,
-                "classification": classification,
-                "reason": reason,
-                "red_flags": red_flags_list,
-                "detailed_reason": f"Email: {email} | Domain: {domain} | Status: {classification}. {reason}{red_flags_summary}",
-                "indicators": indicators,
-                "threats": threats,
-                "details": details,
-                "is_official_domain": is_official,
+                "success": True, "type": "email", "email": email, "domain": domain, "risk_score": risk,
+                "result": classification, "reason": reason, "red_flags": red_flags,
+                "indicators": indicators, "threats": threats, "details": details,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-
-    def _build_detailed_reason(self, classification, risk, threats, red_flags, brand=None, real=None):
-        """Build detailed explanation for classification"""
-        parts = []
-        
-        parts.append(f"📊 Risk Score: {risk}/100")
-        parts.append(f"🏷️ Classification: {classification}")
-        
-        if classification == "FAKE":
-            parts.append(f"⚠️ This is a FAKE {'website' if not brand else f'{brand.upper()} website'}")
-            if brand and real:
-                parts.append(f"🎭 Impersonates: {brand.upper()} (legitimate: {real})")
-            parts.append("🚨 Do not enter any personal information!")
-            
-        elif classification == "UNSAFE":
-            parts.append("⚠️ This shows signs of phishing or scam activity")
-            parts.append("🚨 Exercise extreme caution!")
-            
-        elif classification == "FRAUD":
-            parts.append("🚨🚨 FRAUDULENT activity detected! 🚨🚨")
-            parts.append("❌ Do NOT proceed - this is a scam")
-            
-        elif classification == "IDENTITY RISK":
-            parts.append("🆔 Potential identity theft risk detected")
-            parts.append("⚠️ Be cautious with personal information")
-            
-        elif classification == "SAFE":
-            parts.append("✅ No security threats detected")
-            parts.append("✓ This appears legitimate")
-        
-        if threats:
-            parts.append(f"🔴 Threats: {', '.join(threats)}")
-        
-        if red_flags:
-            parts.append(f"🚩 Red Flags: {', '.join(red_flags[:3])}")
-            if len(red_flags) > 3:
-                parts.append(f"   +{len(red_flags)-3} more issues")
-        
-        return " | ".join(parts)
-
 
 detector = PhishingDetector()
 
@@ -571,7 +431,7 @@ HTML_TEMPLATE = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🛡️ AI PhishGuard - Advanced Fake Website & Email Detector</title>
+  <title>🛡️ AI PhishGuard - Fake Website & Email Detector</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
@@ -584,12 +444,13 @@ HTML_TEMPLATE = """
     .hero p { color: #94a3b8; font-size: 1.1rem; margin-top: 10px; }
     .badge-new { background: linear-gradient(135deg, #ef4444, #f97316); color: #fff; font-size: .7rem; padding: 3px 8px; border-radius: 20px; vertical-align: middle; margin-left: 8px; }
     .scanner-card { background: rgba(15, 23, 42, .8); border: 1px solid #1e3a5f; border-radius: 20px; padding: 30px; margin: 30px 0; backdrop-filter: blur(10px); }
-    .nav-tabs { border: none; gap: 8px; margin-bottom: 25px; }
+    .nav-tabs { border: none; gap: 8px; margin-bottom: 25px; flex-wrap: wrap; }
     .nav-tabs .nav-link { border: 1px solid #1e3a5f; color: #94a3b8; border-radius: 10px; padding: 10px 20px; font-weight: 600; background: rgba(30, 58, 95, .3); transition: all .3s; }
     .nav-tabs .nav-link.active { background: linear-gradient(135deg, #38bdf8, #818cf8); color: #fff; border-color: transparent; }
     .input-wrap { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
-    .input-wrap input { flex: 1; background: rgba(30, 58, 95, .4); border: 2px solid #1e3a5f; color: #e2e8f0; border-radius: 12px; padding: 14px 18px; font-size: 1rem; outline: none; transition: border-color .3s; min-width: 200px; }
+    .input-wrap input { flex: 1; background: rgba(30, 58, 95, .4); border: 2px solid #1e3a5f; color: #e2e8f0; border-radius: 12px; padding: 14px 18px; font-size: 1rem; outline: none; min-width: 200px; }
     .input-wrap input:focus { border-color: #38bdf8; }
+    .input-wrap input::placeholder { color: #475569; }
     .btn-scan { background: linear-gradient(135deg, #38bdf8, #818cf8); color: #fff; border: none; border-radius: 12px; padding: 14px 28px; font-weight: 700; font-size: 1rem; cursor: pointer; transition: all .3s; white-space: nowrap; }
     .btn-scan:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(56, 189, 248, .4); }
     .result-box { border-radius: 15px; padding: 22px; margin-top: 20px; animation: slideUp .4s ease; }
@@ -597,16 +458,12 @@ HTML_TEMPLATE = """
     .result-safe { background: linear-gradient(135deg, rgba(16, 185, 129, .15), rgba(6, 78, 59, .2)); border: 2px solid #10b981; }
     .result-suspicious { background: linear-gradient(135deg, rgba(245, 158, 11, .15), rgba(120, 53, 15, .2)); border: 2px solid #f59e0b; }
     .result-danger { background: linear-gradient(135deg, rgba(239, 68, 68, .15), rgba(127, 29, 29, .2)); border: 2px solid #ef4444; }
-    .result-fraud { background: linear-gradient(135deg, rgba(220, 38, 38, .25), rgba(127, 29, 29, .3)); border: 2px solid #dc2626; box-shadow: 0 0 15px rgba(220, 38, 38, .3); }
-    .result-identity { background: linear-gradient(135deg, rgba(139, 92, 246, .15), rgba(91, 33, 182, .2)); border: 2px solid #8b5cf6; }
     .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
-    .result-title { font-size: 1.5rem; font-weight: 800; }
+    .result-title { font-size: 1.4rem; font-weight: 800; }
     .score-circle { width: 70px; height: 70px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; font-weight: 900; }
     .score-safe { background: rgba(16, 185, 129, .2); border: 3px solid #10b981; color: #10b981; }
     .score-warn { background: rgba(245, 158, 11, .2); border: 3px solid #f59e0b; color: #f59e0b; }
     .score-danger { background: rgba(239, 68, 68, .2); border: 3px solid #ef4444; color: #ef4444; }
-    .score-fraud { background: rgba(220, 38, 38, .3); border: 3px solid #dc2626; color: #dc2626; }
-    .score-identity { background: rgba(139, 92, 246, .2); border: 3px solid #8b5cf6; color: #8b5cf6; }
     .risk-bar-wrap { background: rgba(255, 255, 255, .1); border-radius: 10px; height: 10px; margin: 12px 0; }
     .risk-bar { height: 100%; border-radius: 10px; transition: width 1s ease; }
     .indicator-list { list-style: none; margin-top: 12px; }
@@ -618,7 +475,6 @@ HTML_TEMPLATE = """
     .fake-alert .title { color: #f87171; font-weight: 800; font-size: 1rem; margin-bottom: 5px; }
     .fake-alert .detail { color: #fca5a5; font-size: .9rem; }
     .reason-box { background: rgba(0, 0, 0, .3); border-radius: 10px; padding: 12px; margin: 10px 0; border-left: 4px solid; }
-    .classification-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-weight: 700; font-size: .9rem; }
     .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin: 20px 0; }
     .stat-box { background: rgba(15, 23, 42, .8); border: 1px solid #1e3a5f; border-radius: 15px; padding: 20px; text-align: center; }
     .stat-num { font-size: 2rem; font-weight: 900; margin: 8px 0; }
@@ -639,7 +495,7 @@ HTML_TEMPLATE = """
     @keyframes spin { to { transform: rotate(360deg); } }
     .err-msg { background: rgba(239, 68, 68, .15); border: 1px solid #ef4444; color: #f87171; border-radius: 10px; padding: 12px; margin-top: 10px; display: none; }
     .section-title { font-size: 1.5rem; font-weight: 800; color: #e2e8f0; margin-bottom: 20px; }
-    .clear-btn { background: rgba(239, 68, 68, .15); color: #f87171; border: 1px solid #ef4444; border-radius: 8px; padding: 6px 14px; font-size: .85rem; cursor: pointer; transition: all .3s; }
+    .clear-btn { background: rgba(239, 68, 68, .15); color: #f87171; border: 1px solid #ef4444; border-radius: 8px; padding: 6px 14px; font-size: .85rem; cursor: pointer; }
     .clear-btn:hover { background: rgba(239, 68, 68, .3); }
     .info-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; justify-content: center; }
     .info-pill { background: rgba(56, 189, 248, .1); border: 1px solid rgba(56, 189, 248, .3); color: #38bdf8; border-radius: 20px; padding: 4px 12px; font-size: .8rem; }
@@ -648,7 +504,6 @@ HTML_TEMPLATE = """
         .hero h1 { font-size: 1.8rem; }
         .input-wrap { flex-direction: column; }
         .btn-scan { width: 100%; }
-        .result-header { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
@@ -665,7 +520,7 @@ HTML_TEMPLATE = """
   <div class="hero">
     <div class="container">
       <h1>🛡️ Fake Website & Email Detector <span class="badge-new">PRO</span></h1>
-      <p>Advanced detection for phishing, fake domains, brand impersonation & identity risks</p>
+      <p>Instantly detect fake domains, brand impersonation, typosquatting & scam emails</p>
       <div class="info-pills mt-3">
         <span class="info-pill"><i class="fas fa-globe me-1"></i>SAFE / UNSAFE / FAKE</span>
         <span class="info-pill"><i class="fas fa-envelope me-1"></i>FRAUD / IDENTITY RISK</span>
@@ -679,21 +534,13 @@ HTML_TEMPLATE = """
 
     <div class="scanner-card">
       <ul class="nav nav-tabs" id="tabs">
-        <li class="nav-item">
-          <a class="nav-link active" data-bs-toggle="tab" href="#urlTab">
-            <i class="fas fa-globe me-2"></i>Website URL Scanner
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" data-bs-toggle="tab" href="#emailTab">
-            <i class="fas fa-envelope me-2"></i>Email Scanner
-          </a>
-        </li>
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#urlTab"><i class="fas fa-globe me-2"></i>Website URL Scanner</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#emailTab"><i class="fas fa-envelope me-2"></i>Email Scanner</a></li>
       </ul>
 
       <div class="tab-content">
         <div class="tab-pane fade show active" id="urlTab">
-          <p style="color:#94a3b8;margin-bottom:15px">Enter any website URL to detect phishing, fake domains, and security risks.</p>
+          <p style="color:#94a3b8;margin-bottom:15px">Enter any website URL — instantly detect fake or impersonating websites.</p>
           <div class="input-wrap">
             <input type="text" id="urlInput" placeholder="e.g., paypa1.com or g00gle-login.tk" autocomplete="off">
             <button class="btn-scan" onclick="scanURL()"><i class="fas fa-search me-2"></i>Scan URL</button>
@@ -704,7 +551,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="tab-pane fade" id="emailTab">
-          <p style="color:#94a3b8;margin-bottom:15px">Enter any email address to detect fake domains, spoofing, and impersonation attempts.</p>
+          <p style="color:#94a3b8;margin-bottom:15px">Enter any email address — detect fake domains, spoofing & impersonation.</p>
           <div class="input-wrap">
             <input type="text" id="emailInput" placeholder="e.g., support@paypa1.com or security@gmail.com" autocomplete="off">
             <button class="btn-scan" onclick="scanEmail()"><i class="fas fa-shield-alt me-2"></i>Scan Email</button>
@@ -728,12 +575,8 @@ HTML_TEMPLATE = """
     </div>
     <div class="history-table">
       <table>
-        <thead>
-          <tr><th>Type</th><th>Input</th><th>Classification</th><th>Risk Score</th><th>Time</th></tr>
-        </thead>
-        <tbody id="scanHistory">
-          <tr><td colspan="5" style="text-align:center;padding:20px;color:#475569">No scans yet</td></tr>
-        </tbody>
+        <thead><tr><th>Type</th><th>Input</th><th>Result</th><th>Risk Score</th><th>Time</th></tr></thead>
+        <tbody id="scanHistory"><tr><td colspan="5" style="text-align:center;padding:20px;color:#475569">No scans yet</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -782,26 +625,29 @@ HTML_TEMPLATE = """
 
     function buildResult(data, type) {
       const score = data.risk_score;
-      const classification = data.classification;
+      const result = data.result;
       
       let cls = 'result-safe';
       let scoreClass = 'score-safe';
       let barColor = '#10b981';
       let icon = '✅';
       
-      if (classification === 'FRAUD') { cls = 'result-fraud'; scoreClass = 'score-fraud'; barColor = '#dc2626'; icon = '🚨🚨'; }
-      else if (classification === 'FAKE') { cls = 'result-danger'; scoreClass = 'score-danger'; barColor = '#ef4444'; icon = '🎭'; }
-      else if (classification === 'UNSAFE') { cls = 'result-danger'; scoreClass = 'score-danger'; barColor = '#ef4444'; icon = '⚠️'; }
-      else if (classification === 'IDENTITY RISK') { cls = 'result-identity'; scoreClass = 'score-identity'; barColor = '#8b5cf6'; icon = '🆔'; }
-      else if (classification === 'SAFE') { cls = 'result-safe'; scoreClass = 'score-safe'; barColor = '#10b981'; icon = '✅'; }
+      if (result === 'FRAUD') { cls = 'result-danger'; scoreClass = 'score-danger'; barColor = '#ef4444'; icon = '🦠'; }
+      else if (result === 'FAKE') { cls = 'result-danger'; scoreClass = 'score-danger'; barColor = '#ef4444'; icon = '🎭'; }
+      else if (result === 'UNSAFE') { cls = 'result-danger'; scoreClass = 'score-danger'; barColor = '#ef4444'; icon = '⚠️'; }
+      else if (result === 'IDENTITY RISK') { cls = 'result-suspicious'; scoreClass = 'score-warn'; barColor = '#f59e0b'; icon = '🆔'; }
+
+      let reasonHtml = '';
+      if (data.reason) {
+        reasonHtml = `<div class="reason-box" style="border-left-color: ${barColor}"><strong>📋 Reason:</strong> ${escapeHtml(data.reason)}</div>`;
+      }
 
       let fakeAlert = '';
       if (data.details && data.details.fake_brand) {
         fakeAlert = `<div class="fake-alert"><div class="title">🎭 FAKE ${type === 'email' ? 'EMAIL DOMAIN' : 'WEBSITE'} DETECTED!</div>
           <div class="detail">Impersonating: <strong>${data.details.fake_brand.toUpperCase()}</strong></div>
           <div class="detail">Real domain: <strong>${data.details.real_domain}</strong></div>
-          <div class="detail">Attack: <strong>${data.details.attack_type}</strong></div>
-          <div class="detail mt-2"><i class="fas fa-exclamation-triangle"></i> Do not trust this ${type === 'email' ? 'email' : 'website'}!</div></div>`;
+          <div class="detail">Attack: <strong>${data.details.attack_type}</strong></div></div>`;
       }
 
       let threatBadges = '';
@@ -811,18 +657,16 @@ HTML_TEMPLATE = """
 
       let redFlagBadges = '';
       if (data.red_flags && data.red_flags.length) {
-        redFlagBadges = '<div style="margin:10px 0"><strong>🚩 Red Flags:</strong> ' + data.red_flags.map(f => `<span class="red-flag-badge">${f}</span>`).join('') + '</div>';
+        redFlagBadges = '<div style="margin:10px 0"><strong>🚩 Red Flags:</strong> ' + data.red_flags.map(f => `<span class="red-flag-badge">${escapeHtml(f)}</span>`).join('') + '</div>';
       }
 
       let indHTML = '';
       if (data.indicators && data.indicators.length) {
-        indHTML = data.indicators.map(i => `<li>${i}</li>`).join('');
+        indHTML = data.indicators.map(i => `<li>${escapeHtml(i)}</li>`).join('');
       } else {
         indHTML = '<li style="color:#10b981">✅ No suspicious indicators found</li>';
       }
 
-      const classificationColor = classification === 'FRAUD' ? '#dc2626' : classification === 'FAKE' ? '#ef4444' : classification === 'UNSAFE' ? '#f59e0b' : classification === 'IDENTITY RISK' ? '#8b5cf6' : '#10b981';
-      
       const meta = type === 'url'
         ? `<span style="color:#94a3b8;font-size:.85rem"><i class="fas fa-globe me-1"></i>${escapeHtml(data.domain)}</span>`
         : `<span style="color:#94a3b8;font-size:.85rem"><i class="fas fa-envelope me-1"></i>${escapeHtml(data.email)} &nbsp;|&nbsp; Domain: ${escapeHtml(data.domain)}</span>`;
@@ -830,21 +674,15 @@ HTML_TEMPLATE = """
       return `
     <div class="result-box ${cls}">
       <div class="result-header">
-        <div>
-          <div class="result-title">${icon} ${classification}</div>
-          ${meta}
-        </div>
+        <div><div class="result-title">${icon} ${result}</div>${meta}</div>
         <div class="${scoreClass} score-circle">${score}</div>
       </div>
       <div class="risk-bar-wrap"><div class="risk-bar" style="width:${score}%;background:${barColor}"></div></div>
-      <div class="reason-box" style="border-left-color: ${classificationColor}">
-        <strong><i class="fas fa-info-circle me-1"></i>📋 REASON:</strong><br>
-        ${escapeHtml(data.reason || data.detailed_reason || 'Analysis complete')}
-      </div>
+      ${reasonHtml}
       ${fakeAlert}
       ${threatBadges}
       ${redFlagBadges}
-      <div style="color:#94a3b8;font-size:.85rem;margin-top:12px;margin-bottom:4px"><i class="fas fa-list me-1"></i>🔍 Detailed Analysis:</div>
+      <div style="color:#94a3b8;font-size:.85rem;margin-top:12px;margin-bottom:4px"><i class="fas fa-list me-1"></i>Detection Indicators:</div>
       <ul class="indicator-list">${indHTML}</ul>
     </div>`;
     }
@@ -865,15 +703,14 @@ HTML_TEMPLATE = """
         }
         tbody.innerHTML = data.recent_scans.map(s => {
           let badge = '';
-          if (s.classification === 'SAFE') badge = '<span style="color:#10b981;font-weight:700">✅ SAFE</span>';
-          else if (s.classification === 'IDENTITY RISK') badge = '<span style="color:#8b5cf6;font-weight:700">🆔 IDENTITY RISK</span>';
-          else if (s.classification === 'UNSAFE') badge = '<span style="color:#f59e0b;font-weight:700">⚠️ UNSAFE</span>';
-          else if (s.classification === 'FAKE') badge = '<span style="color:#ef4444;font-weight:700">🎭 FAKE</span>';
-          else badge = '<span style="color:#dc2626;font-weight:700">🚨 FRAUD</span>';
+          if (s.result === 'SAFE') badge = '<span style="color:#10b981">✅ SAFE</span>';
+          else if (s.result === 'IDENTITY RISK') badge = '<span style="color:#f59e0b">⚠️ IDENTITY RISK</span>';
+          else if (s.result === 'UNSAFE') badge = '<span style="color:#ef4444">⚠️ UNSAFE</span>';
+          else if (s.result === 'FAKE') badge = '<span style="color:#ef4444">🎭 FAKE</span>';
+          else badge = '<span style="color:#ef4444">🚨 FRAUD</span>';
           const typeIcon = s.type === 'url' ? '🌐 URL' : '📧 Email';
           let barColor = '#10b981';
-          if (s.risk_score >= 75) barColor = '#dc2626';
-          else if (s.risk_score >= 50) barColor = '#ef4444';
+          if (s.risk_score >= 65) barColor = '#ef4444';
           else if (s.risk_score >= 30) barColor = '#f59e0b';
           const bar = `<div style="background:rgba(255,255,255,.1);border-radius:5px;height:6px;width:80px;display:inline-block;vertical-align:middle;margin-right:5px"><div style="height:100%;border-radius:5px;width:${s.risk_score}%;background:${barColor}"></div></div>${s.risk_score}`;
           return `<tr><td>${typeIcon}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(s.input)}">${escapeHtml(s.input.substring(0, 40))}${s.input.length > 40 ? '...' : ''}</td><td>${badge}</td><td>${bar}</td><td style="color:#64748b">${s.timestamp || ''}</td></tr>`;
@@ -922,16 +759,14 @@ def scan_url():
     if res.get("success"):
         db = load_db()
         db["scans"].append({
-            "type": "url",
-            "input": data["url"],
-            "classification": res["classification"],
-            "risk_score": res["risk_score"],
+            "type": "url", "input": data["url"],
+            "result": res["result"], "risk_score": res["risk_score"],
             "timestamp": res["timestamp"]
         })
         db["statistics"]["total_scans"] += 1
         stats_map = {"SAFE": "safe_scans", "UNSAFE": "unsafe_scans", "FAKE": "fake_scans", 
                      "FRAUD": "fraud_scans", "IDENTITY RISK": "identity_risk_scans"}
-        stat_key = stats_map.get(res["classification"], "unsafe_scans")
+        stat_key = stats_map.get(res["result"], "unsafe_scans")
         db["statistics"][stat_key] = db["statistics"].get(stat_key, 0) + 1
         save_db(db)
     return jsonify(res)
@@ -945,16 +780,14 @@ def scan_email():
     if res.get("success"):
         db = load_db()
         db["scans"].append({
-            "type": "email",
-            "input": data["email"],
-            "classification": res["classification"],
-            "risk_score": res["risk_score"],
+            "type": "email", "input": data["email"],
+            "result": res["result"], "risk_score": res["risk_score"],
             "timestamp": res["timestamp"]
         })
         db["statistics"]["total_scans"] += 1
         stats_map = {"SAFE": "safe_scans", "UNSAFE": "unsafe_scans", "FAKE": "fake_scans", 
                      "FRAUD": "fraud_scans", "IDENTITY RISK": "identity_risk_scans"}
-        stat_key = stats_map.get(res["classification"], "unsafe_scans")
+        stat_key = stats_map.get(res["result"], "unsafe_scans")
         db["statistics"][stat_key] = db["statistics"].get(stat_key, 0) + 1
         save_db(db)
     return jsonify(res)
